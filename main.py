@@ -1,4 +1,3 @@
-```python
 # main.py — Telegram-bot для платного доступа + Google Sheets фиксация чеков
 import os
 import openai
@@ -231,5 +230,4 @@ def run_bot():
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     run_bot()
-```
 

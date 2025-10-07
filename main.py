@@ -1,283 +1,170 @@
-import os
-import json
 import logging
-import datetime
-from flask import Flask
-from threading import Thread
+import os
 from dotenv import load_dotenv
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from telegram import (
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
-)
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     filters,
     ContextTypes,
-    CallbackQueryHandler,
+    ConversationHandler
 )
+import gspread
+from google.oauth2.service_account import Credentials
 from openai import OpenAI
 
-# ---------------------- #
-# 🔧 Настройки окружения
-# ---------------------- #
+# ------------------ ЛОГИ ------------------
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger("angelika-bot")
+
+# ------------------ НАСТРОЙКИ ------------------
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
-# ---------------------- #
-# 🧾 Настройки Google Sheets
-# ---------------------- #
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-creds_dict = json.loads(GOOGLE_CREDS_JSON)
-creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-service = build("sheets", "v4", credentials=creds)
-
-SPREADSHEET_ID = "ТУТ_ВСТАВЬ_ID_ТВОЕЙ_ТАБЛИЦЫ"  # ⚠️ Замени на свой ID
-SHEET_CHEQUES = "Cheques"
-SHEET_SESSIONS = "Sessions"
-
-# ---------------------- #
-# 🧠 Инициализация OpenAI
-# ---------------------- #
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-# ---------------------- #
-# ⚙️ Логирование
-# ---------------------- #
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("angelika-bot")
+# ------------------ GOOGLE SHEETS ------------------
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+creds = Credentials.from_service_account_info(eval(GOOGLE_CREDS_JSON), scopes=SCOPES)
+gc = gspread.authorize(creds)
 
-# ---------------------- #
-# 🌐 Flask сервер
-# ---------------------- #
-app = Flask(__name__)
+SHEET_NAME = "AngelikaBot"
+try:
+    sh = gc.open(SHEET_NAME)
+except gspread.SpreadsheetNotFound:
+    sh = gc.create(SHEET_NAME)
+    sh.share(None, perm_type='anyone', role='writer')
 
+try:
+    worksheet = sh.worksheet("Data")
+except gspread.WorksheetNotFound:
+    worksheet = sh.add_worksheet(title="Data", rows=1000, cols=10)
+    worksheet.append_row(["Имя", "Username", "Тип", "Комментарий/Данные"])
 
-@app.route("/")
-def index():
-    return "Angelika Resonance Bot is alive 🌸"
+# ------------------ КНОПКИ ------------------
+main_menu = ReplyKeyboardMarkup(
+    [
+        ["📅 Записаться на сессию", "📤 Отправить чек"],
+        ["💳 Реквизиты для оплаты", "💡 FAQ"],
+        ["🔓 Проверить доступ к RESONANCE"]
+    ],
+    resize_keyboard=True
+)
 
-
-# ---------------------- #
-# 🧩 Кнопки меню
-# ---------------------- #
-def main_menu():
-    buttons = [
-        [KeyboardButton("📋 Реквизиты для оплаты")],
-        [KeyboardButton("📤 Отправить чек")],
-        [KeyboardButton("🔓 Проверить доступ к RESONANCE")],
-        [KeyboardButton("📅 Записаться на сессию")],
-        [KeyboardButton("ℹ️ FAQ")],
-    ]
-    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
-
-
-# ---------------------- #
-# 🚀 Старт
-# ---------------------- #
+# ------------------ КОМАНДЫ ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    user = update.effective_user
+    text = (
         "✨ Привет! Я нейро-ассистент Анжелики.\n\n"
         "Я помогу тебе:\n"
         "🔹 Войти в сообщество RESONANCE\n"
         "🔹 Узнать реквизиты для оплаты\n"
         "🔹 Проверить доступ\n"
-        "🔹 Записаться на сессию\n"
         "🔹 Задать вопрос\n\n"
-        "Выбери действие ниже 👇",
-        reply_markup=main_menu(),
+        "Выбери действие ниже 👇"
+    )
+    await update.message.reply_text(text, reply_markup=main_menu)
+
+async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "FAQ:\n- Текущая цена: 11111 ₸\n- Доступ на 30 дней\n- После оплаты пришлите чек."
     )
 
-
-# ---------------------- #
-# 📋 Реквизиты
-# ---------------------- #
-async def show_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "💳 *Реквизиты для оплаты:*\n\n"
+async def payment_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💳 Реквизиты для оплаты:\n\n"
         "Kaspi: https://pay.kaspi.kz/pay/ymwm8kds\n"
         "Halyk Bank: 4405 6397 3973 4828\n"
         "Tinkoff: 2200 7008 3889 3427\n"
         "USDT (TRC20): TLhAz9G84nAdMvJtb7NoZRqCXfekDxj5rN\n\n"
-        "После оплаты нажмите 📤 *Отправить чек*."
+        "После оплаты нажмите '📤 Отправить чек'."
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
 
+# ------------------ ОТПРАВКА ЧЕКА ------------------
+async def send_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Отправьте фото или файл с чеком.")
 
-# ---------------------- #
-# ℹ️ FAQ
-# ---------------------- #
-async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "📘 *FAQ:*\n"
-        "- Текущая цена: 11 111 ₸\n"
-        "- Доступ на 30 дней\n"
-        "- После оплаты пришлите чек для подтверждения."
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-
-# ---------------------- #
-# 📤 Отправка чека
-# ---------------------- #
-async def receive_cheque(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    file_id = None
-
-    if update.message.photo:
-        file_id = update.message.photo[-1].file_id
-    elif update.message.document:
-        file_id = update.message.document.file_id
-    else:
-        await update.message.reply_text("📎 Пожалуйста, отправьте фото или файл с чеком.")
-        return
-
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     try:
-        sheet = service.spreadsheets()
-        values = [
-            [
-                user.username or "",
-                str(user.id),
-                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                file_id,
-                "Ожидает",
-            ]
-        ]
-        sheet.values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_CHEQUES}!A:E",
-            valueInputOption="RAW",
-            body={"values": values},
-        ).execute()
-        await update.message.reply_text("✅ Чек успешно получен. Проверка занимает до 24 часов.")
+        worksheet.append_row([user.first_name, user.username, "Чек", "Получен файл/фото"])
+        await update.message.reply_text("✅ Чек получен! Мы проверим его и подтвердим доступ.")
     except Exception as e:
-        logger.error(e)
-        await update.message.reply_text("❌ Ошибка при сохранении чека.")
+        logger.error(f"Ошибка записи чека: {e}")
+        await update.message.reply_text("❌ Ошибка записи чека. Попробуйте снова позже.")
 
+# ------------------ ЗАПИСЬ НА СЕССИЮ ------------------
+ASK_SESSION = range(1)
 
-# ---------------------- #
-# 🔓 Проверка доступа
-# ---------------------- #
-async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    try:
-        sheet = service.spreadsheets()
-        data = (
-            sheet.values()
-            .get(spreadsheetId=SPREADSHEET_ID, range=f"{SHEET_CHEQUES}!A:E")
-            .execute()
-        )
-        rows = data.get("values", [])
-        for row in rows:
-            if len(row) >= 5 and (row[0] == user.username or row[1] == str(user.id)):
-                if row[4].lower() == "подтвержден":
-                    await update.message.reply_text(
-                        "✅ Доступ подтверждён!\nДобро пожаловать в сообщество RESONANCE 💫\n"
-                        "🔗 [Перейти в канал](https://t.me/your_channel_invite_link)",
-                        parse_mode="Markdown",
-                    )
-                    return
-        await update.message.reply_text(
-            "🚫 Доступ не найден.\nПожалуйста, оплатите участие и отправьте чек через 📤 Отправить чек."
-        )
-    except Exception as e:
-        logger.error(e)
-        await update.message.reply_text("⚠️ Ошибка при проверке доступа.")
-
-
-# ---------------------- #
-# 📅 Запись на сессию
-# ---------------------- #
-async def start_session_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📅 Напишите, пожалуйста:\n"
-        "- Онлайн или оффлайн формат;\n"
-        "- Удобное число и время;\n"
-        "- Ваш вопрос или цель встречи."
+        "📅 Для записи укажите:\n1️⃣ Онлайн или офлайн\n2️⃣ Удобную дату и время\n3️⃣ Примерный запрос или вопрос"
     )
-    context.user_data["waiting_for_session_info"] = True
+    return ASK_SESSION
 
-
-async def save_session_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("waiting_for_session_info"):
-        user = update.message.from_user
-        text = update.message.text
-        try:
-            sheet = service.spreadsheets()
-            values = [
-                [
-                    user.username or "",
-                    str(user.id),
-                    datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    text,
-                    "Новая",
-                ]
-            ]
-            sheet.values().append(
-                spreadsheetId=SPREADSHEET_ID,
-                range=f"{SHEET_SESSIONS}!A:E",
-                valueInputOption="RAW",
-                body={"values": values},
-            ).execute()
-            await update.message.reply_text("✅ Ваша заявка на сессию сохранена. Анжелика свяжется с вами.")
-        except Exception as e:
-            logger.error(e)
-            await update.message.reply_text("❌ Ошибка при записи в таблицу.")
-        context.user_data["waiting_for_session_info"] = False
-
-
-# ---------------------- #
-# 💬 AI-ответы (общие вопросы)
-# ---------------------- #
-async def ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def save_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     user_text = update.message.text
     try:
+        worksheet.append_row([user.first_name, user.username, "Заявка на сессию", user_text])
+        await update.message.reply_text("✅ Спасибо! Заявка записана. Мы свяжемся с вами для подтверждения.")
+    except Exception as e:
+        logger.error(f"Ошибка записи заявки: {e}")
+        await update.message.reply_text("❌ Ошибка записи в таблицу.")
+    return ConversationHandler.END
+
+# ------------------ ПРОВЕРКА ДОСТУПА ------------------
+async def check_access(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔓 Проверить доступ к RESONANCE:\n\n"
+        "Введите ваш Telegram username (без @), и я проверю, есть ли у вас активный доступ."
+    )
+
+# ------------------ AI-ОТВЕТЫ ------------------
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_message = update.message.text
+    user = update.effective_user
+    try:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты ассистент Анжелики, которая занимается духовным развитием, эзотерикой и самопознанием."},
-                {"role": "user", "content": user_text},
+                {"role": "system", "content": "Ты ассистент Анжелики, помогаешь клиентам по подписке RESONANCE."},
+                {"role": "user", "content": user_message},
             ],
         )
-        answer = response.choices[0].message.content
-        await update.message.reply_text(answer)
+        ai_text = response.choices[0].message.content.strip()
+        worksheet.append_row([user.first_name, user.username, "Вопрос", user_message])
+        await update.message.reply_text(ai_text)
     except Exception as e:
-        logger.error(e)
+        logger.error(f"OpenAI error: {e}")
         await update.message.reply_text("⚠️ Ошибка при обращении к AI.")
 
+# ------------------ ОСНОВНОЙ БЛОК ------------------
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# ---------------------- #
-# 🚀 Запуск бота
-# ---------------------- #
-def run_bot():
-    app_tg = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    session_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("📅 Записаться на сессию"), ask_session)],
+        states={ASK_SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_session)]},
+        fallbacks=[],
+    )
 
-    app_tg.add_handler(CommandHandler("start", start))
-    app_tg.add_handler(MessageHandler(filters.Regex("📋"), show_payment))
-    app_tg.add_handler(MessageHandler(filters.Regex("ℹ️"), faq))
-    app_tg.add_handler(MessageHandler(filters.Regex("📤"), receive_cheque))
-    app_tg.add_handler(MessageHandler(filters.Regex("🔓"), check_access))
-    app_tg.add_handler(MessageHandler(filters.Regex("📅"), start_session_request))
-    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, save_session_request))
-    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_reply))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Regex("💡 FAQ"), faq))
+    app.add_handler(MessageHandler(filters.Regex("💳 Реквизиты для оплаты"), payment_details))
+    app.add_handler(MessageHandler(filters.Regex("📤 Отправить чек"), send_receipt))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_photo))
+    app.add_handler(session_conv)
+    app.add_handler(MessageHandler(filters.Regex("🔓 Проверить доступ к RESONANCE"), check_access))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("🚀 Bot started successfully.")
-    app_tg.run_polling()
-
-
-def run_flask():
-    app.run(host="0.0.0.0", port=10000)
-
+    app.run_polling()
 
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    run_bot()
+    main()

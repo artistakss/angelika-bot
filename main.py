@@ -8,7 +8,7 @@ from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# -------------------- ЛОГИ --------------------
+# -------------------- ЛОГИ и ПРОВЕРКА PTB --------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("angelika-bot")
 logger.info(f"PTB VERSION CHECK: python-telegram-bot={TG_VER}")

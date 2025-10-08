@@ -1,61 +1,48 @@
 import os
 import logging
-from flask import Flask, request
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import json
 
 # -------------------- CONFIG --------------------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
+GOOGLE_CREDS_RAW = os.getenv("GOOGLE_CREDENTIALS") or os.getenv("GOOGLE_CREDS_JSON")  # fallback
 
-# Render automatically provides this port
 PORT = int(os.environ.get("PORT", 10000))
 WEBHOOK_URL = f"https://angelika-bot.onrender.com/{TOKEN}"
 
 # -------------------- LOGGING --------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("angelika-bot")
+logger = logging.getLogger("angelika-бot")
+
+# -------------------- VALIDATE ENV --------------------
+if not TOKEN:
+    raise RuntimeError("Отсутствует TELEGRAM_TOKEN в переменных окружения.")
+if not OPENAI_API_KEY:
+    logger.warning("OPENAI_API_KEY отсутствует; ответы AI будут падать.")
 
 # -------------------- INIT CLIENTS --------------------
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 gc = None
-try:
-    import json
-    creds_json = json.loads(os.getenv("GOOGLE_CREDENTIALS"))
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    gc = gspread.authorize(creds)
-    logger.info("✅ Google Sheets connected successfully.")
-except Exception as e:
-    logger.error(f"❌ Google Sheets error: {e}")
-
-# -------------------- FLASK SETUP --------------------
-app = Flask(__name__)
-
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put_nowait(update)
-    return "ok", 200
-
-@app.route("/", methods=["GET"])
-def home():
-    return "🤖 Angelika bot is running!", 200
+if GOOGLE_CREDS_RAW:
+    try:
+        creds_json = json.loads(GOOGLE_CREDS_RAW)
+        scope = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+        gc = gspread.authorize(creds)
+        logger.info("✅ Подключение к Google Sheets успешно.")
+    except Exception as e:
+        logger.error(f"❌ Ошибка Google Sheets: {e}")
+else:
+    logger.warning("GOOGLE_CREDENTIALS/GOOGLE_CREDS_JSON не установлены; запись в Sheets отключена.")
 
 # -------------------- TELEGRAM HANDLERS --------------------
 async def start(update: Update, context):
@@ -116,8 +103,9 @@ async def handle_buttons(update: Update, context):
 
 async def handle_message(update: Update, context):
     user_text = update.message.text or ""
-
-    # Попытка ответа через OpenAI
+    if not OPENAI_API_KEY:
+        await update.message.reply_text("AI недоступен: отсутствует ключ. Напишите позже.")
+        return
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -156,7 +144,7 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_m
 application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
 if __name__ == "__main__":
-    logger.info("🚀 Bot starting via webhook...")
+    logger.info("🚀 Bot запускается через webhook...")
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,

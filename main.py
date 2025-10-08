@@ -1,3 +1,18 @@
+import logging, os
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("angelika-bot")
+
+def present(name):
+    v = os.getenv(name)
+    return f"{name}={'set' if v else 'missing'}" + (f" (len={len(v)})" if v else "")
+
+logger.info("ENV CHECK: " + ", ".join([
+    present("TELEGRAM_TOKEN"),
+    present("OPENAI_API_KEY"),
+    present("GOOGLE_CREDENTIALS"),
+    present("GOOGLE_CREDENTIALS_B64"),
+]))
+
 import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup

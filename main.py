@@ -1,175 +1,164 @@
 import os
 import logging
-from dotenv import load_dotenv
-from flask import Flask
-from threading import Thread
-
+from flask import Flask, request
 from telegram import (
     Update,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
+    CallbackQueryHandler,
     MessageHandler,
     filters,
-    ContextTypes,
 )
-import openai
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from openai import OpenAI
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-
-# === Настройка логов ===
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("angelika-bot")
-
-# === Загрузка переменных окружения ===
-load_dotenv()
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# -------------------- CONFIG --------------------
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
-# === Настройка OpenAI ===
-openai.api_key = OPENAI_API_KEY
+# Render automatically provides this port
+PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = f"https://angelika-bot.onrender.com/{TOKEN}"
 
-# === Настройка Flask (для Render) ===
+# -------------------- LOGGING --------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("angelika-bot")
+
+# -------------------- INIT CLIENTS --------------------
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+gc = None
+try:
+    creds_dict = eval(GOOGLE_CREDS_JSON)
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    gc = gspread.authorize(creds)
+    logger.info("✅ Google Sheets connected successfully.")
+except Exception as e:
+    logger.error(f"❌ Google Sheets error: {e}")
+
+# -------------------- FLASK SETUP --------------------
 app = Flask(__name__)
 
-@app.route('/')
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "ok", 200
+
+@app.route("/", methods=["GET"])
 def home():
-    return "Angelika Bot is running!"
+    return "🤖 Angelika bot is running!", 200
 
-# === Клавиатура ===
-MAIN_MENU = [
-    [KeyboardButton("💫 FAQ"), KeyboardButton("💰 Реквизиты для оплаты")],
-    [KeyboardButton("📤 Отправить чек"), KeyboardButton("📅 Записаться на сессию")],
-    [KeyboardButton("🔓 Проверить доступ к RESONANCE")]
-]
-MARKUP = ReplyKeyboardMarkup(MAIN_MENU, resize_keyboard=True)
-
-# === Google Sheets ===
-def get_sheets_service():
-    creds_dict = eval(GOOGLE_CREDS_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    return build("sheets", "v4", credentials=creds)
-
-
-def add_to_sheet(data):
-    try:
-        service = get_sheets_service()
-        sheet = service.spreadsheets()
-        sheet.values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range="A:E",
-            valueInputOption="RAW",
-            body={"values": [data]},
-        ).execute()
-        logger.info("✅ Записано в Google Sheets: %s", data)
-    except Exception as e:
-        logger.error("Ошибка записи в Google Sheets: %s", e)
-
-
-# === OpenAI-ответ ===
-async def ask_ai(question: str) -> str:
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Ты помощник Анжелики в сфере духовных практик, эзотерики и саморазвития."},
-                      {"role": "user", "content": question}]
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"OpenAI error: {e}")
-        return "⚠️ Ошибка при обращении к AI."
-
-
-# === Обработчики ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+# -------------------- TELEGRAM HANDLERS --------------------
+async def start(update: Update, context):
+    keyboard = [
+        [InlineKeyboardButton("📅 Записаться на сессию", callback_data="session")],
+        [InlineKeyboardButton("📤 Отправить чек", callback_data="check")],
+        [InlineKeyboardButton("💳 Реквизиты для оплаты", callback_data="requisites")],
+        [InlineKeyboardButton("📘 FAQ", callback_data="faq")],
+        [InlineKeyboardButton("🔓 Проверить доступ к RESONANCE", callback_data="access")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    text = (
         "✨ Привет! Я нейро-ассистент Анжелики.\n\n"
         "Я помогу тебе:\n"
+        "🔹 Войти в сообщество RESONANCE\n"
         "🔹 Узнать реквизиты для оплаты\n"
-        "🔹 Проверить доступ к RESONANCE\n"
-        "🔹 Записаться на сессию\n"
-        "🔹 Отправить чек\n\n"
-        "Выбери действие ниже 👇",
-        reply_markup=MARKUP
+        "🔹 Проверить доступ\n"
+        "🔹 Записаться на сессию\n\n"
+        "Выбери действие ниже 👇"
     )
+    await update.message.reply_text(text, reply_markup=reply_markup)
 
+async def handle_buttons(update: Update, context):
+    query = update.callback_query
+    await query.answer()
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "💫 FAQ":
-        await update.message.reply_text(
-            "FAQ:\n- Текущая цена: 11111 ₸\n- Доступ на 30 дней\n- После оплаты пришлите чек."
-        )
-
-    elif text == "💰 Реквизиты для оплаты":
-        await update.message.reply_text(
-            "Реквизиты для оплаты:\n\n"
+    if query.data == "faq":
+        text = "FAQ:\n- Текущая цена: 11 111 ₸\n- Доступ на 30 дней\n- После оплаты пришлите чек."
+    elif query.data == "requisites":
+        text = (
+            "💳 Реквизиты для оплаты:\n\n"
             "Kaspi: https://pay.kaspi.kz/pay/ymwm8kds\n"
             "Halyk Bank: 4405 6397 3973 4828\n"
             "Tinkoff: 2200 7008 3889 3427\n"
             "USDT (TRC20): TLhAz9G84nAdMvJtb7NoZRqCXfekDxj5rN\n\n"
             "После оплаты нажмите '📤 Отправить чек'."
         )
-
-    elif text == "📅 Записаться на сессию":
-        await update.message.reply_text(
-            "🧘‍♀️ Для записи на сессию, пожалуйста, укажите:\n"
-            "- Формат: онлайн или офлайн\n"
+    elif query.data == "session":
+        text = (
+            "📅 Для записи на сессию пришлите, пожалуйста:\n"
+            "- Формат: онлайн или оффлайн\n"
             "- Желаемую дату и время\n"
-            "- Примерный запрос (вопрос или тема)\n\n"
-            "После этого я передам данные Анжелике 💫"
+            "- Примерный запрос или тему встречи\n\n"
+            "Эти данные будут переданы Анжелике ❤️"
         )
-
-    elif text == "📤 Отправить чек":
-        await update.message.reply_text("📎 Отправьте фото или файл с чеком, я всё зафиксирую.")
-
-    elif text == "🔓 Проверить доступ к RESONANCE":
-        await update.message.reply_text("🔍 Введите почту, с которой оформлялась подписка — я проверю доступ.")
-
+    elif query.data == "check":
+        text = "📤 Отправьте фото или файл с чеком, чтобы подтвердить оплату."
+    elif query.data == "access":
+        text = (
+            "🔓 Проверка доступа к RESONANCE:\n"
+            "Пожалуйста, отправьте свой email или имя в Telegram, "
+            "на которое оформлялась подписка."
+        )
     else:
-        # если пользователь написал вопрос
-        ai_reply = await ask_ai(text)
-        await update.message.reply_text(ai_reply)
+        text = "Неизвестная команда."
 
+    await query.edit_message_text(text)
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    file_id = update.message.photo[-1].file_id if update.message.photo else None
-    caption = update.message.caption or ""
-    add_to_sheet([user.username, "Чек", file_id, caption, str(update.message.date)])
-    await update.message.reply_text("✅ Чек успешно принят! Ожидайте подтверждения доступа.")
+async def handle_message(update: Update, context):
+    user_text = update.message.text or ""
 
+    # Попытка ответа через OpenAI
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Ты — помощник Анжелики, объясняй спокойно и коротко."},
+                {"role": "user", "content": user_text},
+            ]
+        )
+        answer = response.choices[0].message.content
+        await update.message.reply_text(answer)
+    except Exception as e:
+        logger.error(f"OpenAI error: {e}")
+        await update.message.reply_text("⚠️ Ошибка при обращении к AI. Попробуйте позже.")
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.from_user
-    file_id = update.message.document.file_id
-    caption = update.message.caption or ""
-    add_to_sheet([user.username, "Файл", file_id, caption, str(update.message.date)])
-    await update.message.reply_text("✅ Чек успешно принят! Ожидайте подтверждения доступа.")
+async def handle_photo(update: Update, context):
+    try:
+        file = await update.message.photo[-1].get_file()
+        file_url = file.file_path
+        user = update.message.from_user
 
+        if gc:
+            sh = gc.open("AngelikaBot").sheet1
+            sh.append_row([str(user.id), user.username or "", file_url, "Чек загружен"])
+            await update.message.reply_text("✅ Чек получен и сохранён. Проверим оплату.")
+        else:
+            await update.message.reply_text("⚠️ Ошибка Google Sheets. Чек не записан.")
+    except Exception as e:
+        logger.error(f"Ошибка при записи чека: {e}")
+        await update.message.reply_text("❌ Ошибка записи чека.")
 
-# === Запуск бота ===
-def run_bot():
-    app_tg = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app_tg.add_handler(CommandHandler("start", start))
-    app_tg.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app_tg.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app_tg.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-
-    logger.info("🚀 Bot started successfully.")
-    app_tg.run_polling()
-
+# -------------------- START APP --------------------
+application = Application.builder().token(TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(handle_buttons))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
 if __name__ == "__main__":
-    Thread(target=run_bot).start()
-    app.run(host="0.0.0.0", port=10000)
+    logger.info("🚀 Bot starting via webhook...")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TOKEN,
+        webhook_url=WEBHOOK_URL,
+    )

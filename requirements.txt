@@ -1,9 +1,6 @@
-python-telegram-bot==20.8
-flask
-openai>=1.40.0
-google-api-python-client
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
-python-dotenv
+python-telegram-bot==20.7
+openai==1.12.0
 gspread
+google-auth
+oauth2client
+python-dotenv

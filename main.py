@@ -8,6 +8,19 @@ from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+from telegram import __version__ as TG_VER
+import logging
+logger = logging.getLogger("angelika-bot")
+
+logger.info(f"PTB VERSION CHECK: python-telegram-bot={TG_VER}")
+try:
+    major = int(TG_VER.split('.')[0])
+    if major < 20:
+        raise RuntimeError(f"Требуется python-telegram-bot>=20, установлено {TG_VER}")
+except Exception as e:
+    logger.error(f"Проверка версии PTB: {e}")
+    raise
+    
 # -------------------- ЛОГИ --------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("angelika-bot")

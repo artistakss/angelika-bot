@@ -1,65 +1,77 @@
-import logging, os
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("angelika-bot")
-
-def present(name):
-    v = os.getenv(name)
-    return f"{name}={'set' if v else 'missing'}" + (f" (len={len(v)})" if v else "")
-
-logger.info("ENV CHECK: " + ", ".join([
-    present("TELEGRAM_TOKEN"),
-    present("OPENAI_API_KEY"),
-    present("GOOGLE_CREDENTIALS"),
-    present("GOOGLE_CREDENTIALS_B64"),
-]))
-
 import os
+import json
+import base64
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from openai import OpenAI
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json
 
-# -------------------- CONFIG --------------------
+# -------------------- ЛОГИ --------------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("angelika-bot")
+
+def present(name: str) -> str:
+    v = os.getenv(name)
+    return f"{name}={'set' if v else 'missing'}" + (f" (len={len(v)})" if v else "")
+
+# -------------------- КОНФИГ --------------------
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_CREDS_RAW = os.getenv("GOOGLE_CREDENTIALS") or os.getenv("GOOGLE_CREDS_JSON")  # fallback
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "AngelikaBot")
 
+# Выбор источника для формирования webhook URL
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "https://angelika-bot.onrender.com")
+WEBHOOK_URL = f"{WEBHOOK_BASE}/{TOKEN}"
+
+# Render предоставляет порт через переменную PORT
 PORT = int(os.environ.get("PORT", 10000))
-WEBHOOK_URL = f"https://angelika-bot.onrender.com/{TOKEN}"
 
-# -------------------- LOGGING --------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("angelika-бot")
+logger.info("ENV CHECK: " + ", ".join([
+    present("TELEGRAM_TOKEN"),
+    present("OPENAI_API_KEY"),
+    present("GOOGLE_CREDENTIALS"),
+    present("GOOGLE_CREDENTIALS_B64"),
+    present("WEBHOOK_BASE"),
+    present("PORT"),
+]))
 
-# -------------------- VALIDATE ENV --------------------
+# -------------------- ВАЛИДАЦИЯ КРИТИЧНЫХ ENV --------------------
 if not TOKEN:
     raise RuntimeError("Отсутствует TELEGRAM_TOKEN в переменных окружения.")
+
 if not OPENAI_API_KEY:
-    logger.warning("OPENAI_API_KEY отсутствует; ответы AI будут падать.")
+    logger.warning("OPENAI_API_KEY отсутствует; ответы AI будут отключены.")
 
-# -------------------- INIT CLIENTS --------------------
-client = OpenAI(api_key=OPENAI_API_KEY)
+# -------------------- КЛИЕНТЫ --------------------
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
+# Google Sheets: поддержка двух вариантов — JSON строкой или base64
 gc = None
-if GOOGLE_CREDS_RAW:
+raw_json = os.getenv("GOOGLE_CREDENTIALS")
+raw_b64 = os.getenv("GOOGLE_CREDENTIALS_B64")
+
+if raw_json or raw_b64:
     try:
-        creds_json = json.loads(GOOGLE_CREDS_RAW)
+        if raw_b64 and not raw_json:
+            decoded = base64.b64decode(raw_b64).decode("utf-8")
+            creds_dict = json.loads(decoded)
+        else:
+            creds_dict = json.loads(raw_json)
         scope = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         gc = gspread.authorize(creds)
         logger.info("✅ Подключение к Google Sheets успешно.")
     except Exception as e:
         logger.error(f"❌ Ошибка Google Sheets: {e}")
 else:
-    logger.warning("GOOGLE_CREDENTIALS/GOOGLE_CREDS_JSON не установлены; запись в Sheets отключена.")
+    logger.warning("GOOGLE_CREDENTIALS/GOOGLE_CREDENTIALS_B64 не установлены; запись в Sheets отключена.")
 
-# -------------------- TELEGRAM HANDLERS --------------------
+# -------------------- HANDLERS --------------------
 async def start(update: Update, context):
     keyboard = [
         [InlineKeyboardButton("📅 Записаться на сессию", callback_data="session")],
@@ -118,8 +130,8 @@ async def handle_buttons(update: Update, context):
 
 async def handle_message(update: Update, context):
     user_text = update.message.text or ""
-    if not OPENAI_API_KEY:
-        await update.message.reply_text("AI недоступен: отсутствует ключ. Напишите позже.")
+    if not client:
+        await update.message.reply_text("AI недоступен: отсутствует ключ. Попробуйте позже.")
         return
     try:
         response = client.chat.completions.create(
@@ -142,24 +154,25 @@ async def handle_photo(update: Update, context):
         user = update.message.from_user
 
         if gc:
-            sh = gc.open("AngelikaBot").sheet1
+            sh = gc.open(GOOGLE_SHEET_NAME).sheet1
             sh.append_row([str(user.id), user.username or "", file_url, "Чек загружен"])
             await update.message.reply_text("✅ Чек получен и сохранён. Проверим оплату.")
         else:
-            await update.message.reply_text("⚠️ Ошибка Google Sheets. Чек не записан.")
+            await update.message.reply_text("⚠️ Google Sheets не настроен. Чек не записан.")
     except Exception as e:
         logger.error(f"Ошибка при записи чека: {e}")
         await update.message.reply_text("❌ Ошибка записи чека.")
 
-# -------------------- START APP --------------------
+# -------------------- СБОРКА ПРИЛОЖЕНИЯ --------------------
 application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(handle_buttons))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
+# -------------------- СТАРТ СЕРВЕРА PTB --------------------
 if __name__ == "__main__":
-    logger.info("🚀 Bot запускается через webhook...")
+    logger.info(f"🚀 Bot запускается через webhook: {WEBHOOK_URL}")
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
